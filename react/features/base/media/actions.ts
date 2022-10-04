@@ -183,6 +183,8 @@ export function setVideoMuted(
         // eslint-disable-next-line no-bitwise
         const newValue = muted ? oldValue | authority : oldValue & ~authority;
 
+        console.log('mute video ', oldValue, newValue);
+
         return dispatch({
             type: SET_VIDEO_MUTED,
             authority,

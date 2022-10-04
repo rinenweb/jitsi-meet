@@ -37,6 +37,7 @@ import {
 import {
     createLocalTracksA,
     destroyLocalTracks,
+    executeTrackOperation,
     showNoDataFromSourceVideoError,
     toggleScreensharing,
     trackMuteUnmuteFailed,
@@ -50,6 +51,7 @@ import {
     setTrackMuted
 } from './functions';
 import { ITrack } from './reducer';
+import { TrackOperationType } from './types';
 
 import './subscriber';
 
@@ -365,33 +367,41 @@ function _removeNoDataFromSourceNotification({ getState, dispatch }: IStore, tra
 async function _setMuted(store: IStore, { ensureTrack, authority, muted }: {
     authority: number; ensureTrack: boolean; muted: boolean; }, mediaType: MediaType) {
     const { dispatch, getState } = store;
-    const localTrack = _getLocalTrack(store, mediaType, /* includePending */ true);
-    const state = getState();
+    const trackOperationType = mediaType === MEDIA_TYPE.AUDIO ? TrackOperationType.Audio : TrackOperationType.Video;
 
-    if (mediaType === MEDIA_TYPE.SCREENSHARE
-        && getMultipleVideoSendingSupportFeatureFlag(state)
-        && !muted) {
-        return;
-    }
+    dispatch(executeTrackOperation(trackOperationType, () => {
+        const localTrack = _getLocalTrack(store, mediaType, /* includePending */ true);
+        const state = getState();
 
-    if (localTrack) {
-        // The `jitsiTrack` property will have a value only for a localTrack for which `getUserMedia` has already
-        // completed. If there's no `jitsiTrack`, then the `muted` state will be applied once the `jitsiTrack` is
-        // created.
-        const { jitsiTrack } = localTrack;
-        const isAudioOnly = (mediaType === MEDIA_TYPE.VIDEO && authority === VIDEO_MUTISM_AUTHORITY.AUDIO_ONLY)
-            || (mediaType === MEDIA_TYPE.SCREENSHARE && authority === SCREENSHARE_MUTISM_AUTHORITY.AUDIO_ONLY);
-
-        // Screenshare cannot be unmuted using the video mute button unless it is muted by audioOnly in the legacy
-        // screensharing mode.
-        if (jitsiTrack && (
-            jitsiTrack.videoType !== 'desktop' || isAudioOnly || getMultipleVideoSendingSupportFeatureFlag(state))
-        ) {
-            setTrackMuted(jitsiTrack, muted, state).catch(() => dispatch(trackMuteUnmuteFailed(localTrack, muted)));
+        if (mediaType === MEDIA_TYPE.SCREENSHARE
+            && getMultipleVideoSendingSupportFeatureFlag(state)
+            && !muted) {
+            return Promise.resolve();
         }
-    } else if (!muted && ensureTrack && (typeof APP === 'undefined' || isPrejoinPageVisible(state))) {
-        // FIXME: This only runs on mobile now because web has its own way of
-        // creating local tracks. Adjust the check once they are unified.
-        dispatch(createLocalTracksA({ devices: [ mediaType ] }));
-    }
+
+        if (localTrack) {
+            // The `jitsiTrack` property will have a value only for a localTrack for which `getUserMedia` has already
+            // completed. If there's no `jitsiTrack`, then the `muted` state will be applied once the `jitsiTrack` is
+            // created.
+            const { jitsiTrack } = localTrack;
+            const isAudioOnly = (mediaType === MEDIA_TYPE.VIDEO && authority === VIDEO_MUTISM_AUTHORITY.AUDIO_ONLY)
+                || (mediaType === MEDIA_TYPE.SCREENSHARE && authority === SCREENSHARE_MUTISM_AUTHORITY.AUDIO_ONLY);
+
+            // Screenshare cannot be unmuted using the video mute button unless it is muted by audioOnly in the legacy
+            // screensharing mode.
+            if (jitsiTrack && (
+                jitsiTrack.videoType !== 'desktop' || isAudioOnly || getMultipleVideoSendingSupportFeatureFlag(state))
+            ) {
+                console.error('setting track mute');
+                return setTrackMuted(jitsiTrack, muted, state).catch(
+                    () => dispatch(trackMuteUnmuteFailed(localTrack, muted)));
+            }
+        } else if (!muted && ensureTrack && (typeof APP === 'undefined' || isPrejoinPageVisible(state))) {
+            // FIXME: This only runs on mobile now because web has its own way of
+            // creating local tracks. Adjust the check once they are unified.
+            return dispatch(createLocalTracksA({ devices: [ mediaType ] }));
+        }
+
+        return Promise.resolve();
+    }));
 }

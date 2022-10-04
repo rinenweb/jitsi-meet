@@ -29,3 +29,9 @@ export interface IShareOptions {
     desktopSharingSources?: string[];
     desktopStream?: any;
 }
+
+export enum TrackOperationType {
+    Audio = 'audio',
+    AudioVideo = 'audio-video',
+    Video = 'video'
+}

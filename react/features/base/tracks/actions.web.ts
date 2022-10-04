@@ -27,6 +27,7 @@ import { MEDIA_TYPE, VIDEO_TYPE } from '../media/constants';
 
 import {
     addLocalTrack,
+    executeTrackOperation,
     replaceLocalTrack
 } from './actions.any';
 import {
@@ -34,7 +35,7 @@ import {
     getLocalDesktopTrack,
     getLocalJitsiAudioTrack
 } from './functions';
-import { IShareOptions, IToggleScreenSharingOptions } from './types';
+import { IShareOptions, IToggleScreenSharingOptions, TrackOperationType } from './types';
 
 export * from './actions.any';
 
@@ -167,8 +168,6 @@ async function _toggleScreenSharing(
     const audioOnlySharing = isAudioOnlySharing(state);
     const screenSharing = isScreenVideoShared(state);
     const conference = getCurrentConference(state);
-    const localAudio = getLocalJitsiAudioTrack(state);
-    const localScreenshare = getLocalDesktopTrack(state['features/base/tracks']);
 
     // Toggle screenshare or audio-only share if the new state is not passed. Happens in the following two cases.
     // 1. ShareAudioDialog passes undefined when the user hits continue in the share audio demo modal.
@@ -218,11 +217,16 @@ async function _toggleScreenSharing(
                 throw new Error(AUDIO_ONLY_SCREEN_SHARE_NO_TRACK);
             }
         } else if (desktopVideoTrack) {
-            if (localScreenshare) {
-                await dispatch(replaceLocalTrack(localScreenshare.jitsiTrack, desktopVideoTrack, conference));
-            } else {
-                await dispatch(addLocalTrack(desktopVideoTrack));
-            }
+            await dispatch(executeTrackOperation(TrackOperationType.Video, async () => {
+                const localScreenshare = getLocalDesktopTrack(getState()['features/base/tracks']);
+
+                if (localScreenshare) {
+                    await dispatch(replaceLocalTrack(localScreenshare.jitsiTrack, desktopVideoTrack, conference));
+                } else {
+                    await dispatch(addLocalTrack(desktopVideoTrack));
+                }
+            }));
+
             if (isScreenshotCaptureEnabled(state, false, true)) {
                 dispatch(toggleScreenshotCaptureSummary(true));
             }
@@ -235,7 +239,9 @@ async function _toggleScreenSharing(
             // Noise suppression doesn't work with desktop audio because we can't chain track effects yet, disable it
             // first. We need to to wait for the effect to clear first or it might interfere with the audio mixer.
             await dispatch(setNoiseSuppressionEnabled(false));
-            _maybeApplyAudioMixerEffect(desktopAudioTrack, state);
+
+            dispatch(executeTrackOperation(TrackOperationType.Audio,
+                () => _maybeApplyAudioMixerEffect(desktopAudioTrack, state)));
             dispatch(setScreenshareAudioTrack(desktopAudioTrack));
 
             // Handle the case where screen share was stopped from the browsers 'screen share in progress' window.
@@ -260,16 +266,25 @@ async function _toggleScreenSharing(
 
         dispatch(toggleScreenshotCaptureSummary(false));
 
-        // Mute the desktop track instead of removing it from the conference since we don't want the client to signal
-        // a source-remove to the remote peer for the screenshare track. Later when screenshare is enabled again, the
-        // same sender will be re-used without the need for signaling a new ssrc through source-add.
-        dispatch(setScreenshareMuted(true));
+        await dispatch(executeTrackOperation(TrackOperationType.Video, () => {
+            // Mute the desktop track instead of removing it from the conference since we don't want the client to
+            // signal a source-remove to the remote peer for the screenshare track. Later when screenshare is enabled
+            // again, the same sender will be re-used without the need for signaling a new ssrc through source-add.
+            dispatch(setScreenshareMuted(true));
+
+            return Promise.resolve();
+        }));
+
         if (desktopAudioTrack) {
-            if (localAudio) {
-                localAudio.setEffect(undefined);
-            } else {
-                await conference.replaceTrack(desktopAudioTrack, null);
-            }
+            await dispatch(executeTrackOperation(TrackOperationType.Audio, async () => {
+                const localAudio = getLocalJitsiAudioTrack(state);
+
+                if (localAudio) {
+                    await localAudio.setEffect(undefined);
+                } else {
+                    await conference.replaceTrack(desktopAudioTrack, null);
+                }
+            }));
             desktopAudioTrack.dispose();
             dispatch(setScreenshareAudioTrack(null));
         }

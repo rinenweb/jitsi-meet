@@ -22,6 +22,7 @@ import { updateSettings } from '../settings/actions';
 
 import {
     SET_NO_SRC_DATA_NOTIFICATION_UID,
+    SET_TRACK_OPERATIONS_PROMISE,
     TRACK_ADDED,
     TRACK_CREATE_CANCELED,
     TRACK_CREATE_ERROR,
@@ -41,7 +42,7 @@ import {
     getTrackByJitsiTrack
 } from './functions';
 import logger from './logger';
-import { ITrackOptions } from './types';
+import { ITrackOptions, TrackOperationType } from './types';
 
 /**
  * Add a given local track to the conference.
@@ -216,6 +217,8 @@ export function createLocalTracksA(options: ITrackOptions = {}) {
                     mediaType: device
                 }
             });
+
+            return gumProcess;
         }
     };
 }
@@ -797,6 +800,68 @@ export function setNoSrcDataNotificationUid(uid?: string) {
 }
 
 /**
+ * Executes a track operation.
+ *
+ * @param {TrackOperationType} type - The type of the operation ('audio', 'video' or 'audio-video').
+ * @param {Function} operation - The operation.
+ * @returns {{
+ *      type: SET_TRACK_OPERATIONS_PROMISE,
+ *      audioTrackOperationsPromise: Promise<void>,
+ *      videoTrackOperationsPromise: Promise<void>
+ * }}
+ */
+export function executeTrackOperation(type: TrackOperationType, operation: () => Promise<any>) {
+    return (dispatch: IStore['dispatch'], getState: IStore['getState']) => {
+        const {
+            audioTrackOperationsPromise,
+            videoTrackOperationsPromise
+        } = getState()['features/base/track-operations'];
+
+        switch (type) {
+        case TrackOperationType.Audio: {
+            const promise = audioTrackOperationsPromise.then(operation, operation);
+
+            dispatch({
+                type: SET_TRACK_OPERATIONS_PROMISE,
+                audioTrackOperationsPromise: promise
+            });
+
+            return promise;
+        }
+        case TrackOperationType.Video: {
+            const promise = videoTrackOperationsPromise.then(operation, operation);
+
+            dispatch({
+                type: SET_TRACK_OPERATIONS_PROMISE,
+                videoTrackOperationsPromise: promise
+            });
+
+            return promise;
+        }
+        case TrackOperationType.AudioVideo: {
+            const promise = Promise.allSettled([
+                audioTrackOperationsPromise,
+                videoTrackOperationsPromise
+            ]).then(operation, operation);
+
+            dispatch({
+                type: SET_TRACK_OPERATIONS_PROMISE,
+                audioTrackOperationsPromise: promise,
+                videoTrackOperationsPromise: promise
+            });
+
+            return promise;
+        }
+        default: {
+            const unexpectedType: never = type;
+
+            return Promise.reject(new Error(`Unexpected track operation type: ${unexpectedType}`));
+        }
+        }
+    };
+}
+
+/**
  * Updates the last media event received for a video track.
  *
  * @param {JitsiRemoteTrack} track - JitsiTrack instance.
@@ -825,31 +890,32 @@ export function updateLastTrackVideoMediaEvent(track: any, name: string): {
  * @returns {Function}
  */
 export function toggleCamera() {
-    return async (dispatch: IStore['dispatch'], getState: IStore['getState']) => {
-        const state = getState();
-        const tracks = state['features/base/tracks'];
-        const localVideoTrack = getLocalVideoTrack(tracks)?.jitsiTrack;
-        const currentFacingMode = localVideoTrack.getCameraFacingMode();
+    return (dispatch: IStore['dispatch'], getState: IStore['getState']) =>
+        dispatch(executeTrackOperation(TrackOperationType.Video,
 
-        /**
-         * FIXME: Ideally, we should be dispatching {@code replaceLocalTrack} here,
-         * but it seems to not trigger the re-rendering of the local video on Chrome;
-         * could be due to a plan B vs unified plan issue. Therefore, we use the legacy
-         * method defined in conference.js that manually takes care of updating the local
-         * video as well.
-         */
-        await APP.conference.useVideoStream(null);
+            // eslint-disable-next-line valid-jsdoc
+            /**
+             * FIXME: Ideally, we should be dispatching {@code replaceLocalTrack} here,
+             * but it seems to not trigger the re-rendering of the local video on Chrome;
+             * could be due to a plan B vs unified plan issue. Therefore, we use the legacy
+             * method defined in conference.js that manually takes care of updating the local
+             * video as well.
+             */
+            () => APP.conference.useVideoStream(null).then(() => {
+                const state = getState();
+                const tracks = state['features/base/tracks'];
+                const localVideoTrack = getLocalVideoTrack(tracks)?.jitsiTrack;
+                const currentFacingMode = localVideoTrack.getCameraFacingMode();
 
-        const targetFacingMode = currentFacingMode === CAMERA_FACING_MODE.USER
-            ? CAMERA_FACING_MODE.ENVIRONMENT
-            : CAMERA_FACING_MODE.USER;
+                const targetFacingMode = currentFacingMode === CAMERA_FACING_MODE.USER
+                    ? CAMERA_FACING_MODE.ENVIRONMENT
+                    : CAMERA_FACING_MODE.USER;
 
-        // Update the flipX value so the environment facing camera is not flipped, before the new track is created.
-        dispatch(updateSettings({ localFlipX: targetFacingMode === CAMERA_FACING_MODE.USER }));
+                // Update the flipX value so the environment facing camera is not flipped, before the new track is
+                // created.
+                dispatch(updateSettings({ localFlipX: targetFacingMode === CAMERA_FACING_MODE.USER }));
 
-        const newVideoTrack = await createLocalTrack('video', null, null, { facingMode: targetFacingMode });
-
-        // FIXME: See above.
-        await APP.conference.useVideoStream(newVideoTrack);
-    };
+                return createLocalTrack('video', null, null, { facingMode: targetFacingMode });
+            })
+            .then((newVideoTrack: any) => APP.conference.useVideoStream(newVideoTrack))));
 }
